@@ -16,7 +16,10 @@ phases:
   build:
     commands:
     - echo Deploying CloudFormation stack...
-    - aws cloudformation deploy \ --template-file AutoScalingGroup.yml \ --stack-name AutoScalingApacheWebServer \ --capabilities CAPABILITY_NAMED_IAM
+    - aws cloudformation deploy \
+        --template-file AutoScalingGroup.yml \
+        --stack-name AutoScalingApacheWebServer \
+        --capabilities CAPABILITY_NAMED_IAM
 
   post_build:
     commands:
@@ -24,4 +27,4 @@ phases:
 
 artifacts:
   files:
-  - AutoScalingGroup.yml
+    - AutoScalingGroup.yml
