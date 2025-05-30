@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Auto Scaling Lab - Dynamic Instance Display with Stress Testing
+Description: Setup to run a webserver on auto-scaling groups
 
 Parameters:
   LatestAmazonLinuxAMI:
@@ -7,7 +7,6 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
 
 Resources:
-  # IAM Role for EC2 instances to access S3
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -34,7 +33,6 @@ Resources:
       Path: /
       Roles: [!Ref InstanceRole]
 
-  # Networking Components
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -58,7 +56,6 @@ Resources:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
-  # Subnets (2 AZs for high availability)
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -101,7 +98,6 @@ Resources:
       - Key: Name
         Value: PrivateSubnet2
 
-  # NAT Gateway
   NATGatewayEIP:
     Type: AWS::EC2::EIP
     Properties:
@@ -115,7 +111,6 @@ Resources:
       SubnetId: !Ref PublicSubnet1
     DependsOn: VPCGatewayAttachment
 
-  # Route Tables
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
@@ -146,7 +141,6 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NATGateway
 
-  # Subnet Associations
   PublicSubnetRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
@@ -171,7 +165,6 @@ Resources:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable
 
-  # Security Groups
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -202,7 +195,6 @@ Resources:
       - IpProtocol: "-1"
         CidrIp: 0.0.0.0/0
 
-  # Load Balancer
   WebServerLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -237,7 +229,6 @@ Resources:
       Port: 80
       Protocol: HTTP
 
-  # Launch Template with S3 script reference
   WebServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -261,16 +252,15 @@ Resources:
             chmod +x /tmp/autoscalingScript.sh
             /tmp/autoscalingScript.sh
 
-  # Auto Scaling Group
   WebServerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref WebServerLaunchTemplate
         Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
-      MinSize: 2
-      MaxSize: 4
-      DesiredCapacity: 2
+      MinSize: 1
+      MaxSize: 3
+      DesiredCapacity: 1
       VPCZoneIdentifier:
       - !Ref PrivateSubnet1
       - !Ref PrivateSubnet2
@@ -279,7 +269,6 @@ Resources:
       HealthCheckType: ELB
       HealthCheckGracePeriod: 300
 
-  # Scaling Policies
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
     Properties:
