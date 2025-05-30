@@ -329,4 +329,3 @@ Resources:
       AutoScalingGroupName: !Ref WebServerAutoScalingGroup
       ScalingAdjustment: -1
       Cooldown: 300
-
