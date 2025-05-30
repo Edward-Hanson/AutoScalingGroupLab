@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Auto-scaling Apache web server using existing autoscalingScript.sh
+Description: Auto Scaling Lab - Dynamic Instance Display with Stress Testing
 
 Parameters:
   LatestAmazonLinuxAMI:
@@ -7,6 +7,34 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
 
 Resources:
+  # IAM Role for EC2 instances to access S3
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: [ec2.amazonaws.com]
+          Action: ['sts:AssumeRole']
+      Path: /
+      Policies:
+      - PolicyName: S3AccessPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: ['s3:GetObject']
+            Resource: ['arn:aws:s3:::hanson-scripts/*']
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles: [!Ref InstanceRole]
+
+  # Networking Components
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -15,14 +43,14 @@ Resources:
       EnableDnsHostnames: true
       Tags:
       - Key: Name
-        Value: WebServerVPC
+        Value: AutoScalingLabVPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
       - Key: Name
-        Value: WebServerIGW
+        Value: AutoScalingLabIGW
 
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -30,6 +58,7 @@ Resources:
       VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
+  # Subnets (2 AZs for high availability)
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
@@ -52,17 +81,28 @@ Resources:
       - Key: Name
         Value: PublicSubnet2
 
-  PrivateSubnet:
+  PrivateSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+      - Key: Name
+        Value: PrivateSubnet1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       Tags:
       - Key: Name
-        Value: PrivateSubnet
+        Value: PrivateSubnet2
 
-  ElasticIP:
+  # NAT Gateway
+  NATGatewayEIP:
     Type: AWS::EC2::EIP
     Properties:
       Domain: vpc
@@ -71,9 +111,25 @@ Resources:
   NATGateway:
     Type: AWS::EC2::NatGateway
     Properties:
-      AllocationId: !GetAtt ElasticIP.AllocationId
+      AllocationId: !GetAtt NATGatewayEIP.AllocationId
       SubnetId: !Ref PublicSubnet1
     DependsOn: VPCGatewayAttachment
+
+  # Route Tables
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+      - Key: Name
+        Value: PublicRouteTable
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
 
   PrivateRouteTable:
     Type: AWS::EC2::RouteTable
@@ -90,39 +146,32 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       NatGatewayId: !Ref NATGateway
 
-  PrivateSubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PrivateSubnet
-      RouteTableId: !Ref PrivateRouteTable
-
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-      Tags:
-      - Key: Name
-        Value: PublicRouteTable
-
-  DefaultPublicRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  PublicSubnet1RouteTableAssociation:
+  # Subnet Associations
+  PublicSubnetRouteTableAssociation1:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
 
-  PublicSubnet2RouteTableAssociation:
+  PublicSubnetRouteTableAssociation2:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref PublicRouteTable
 
+  PrivateSubnetRouteTableAssociation1:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetRouteTableAssociation2:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Security Groups
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -134,13 +183,15 @@ Resources:
         ToPort: 80
         CidrIp: 0.0.0.0/0
       SecurityGroupEgress:
-      - IpProtocol: "-1"
-        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 10.0.0.0/16
 
   WebServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Enable HTTP access from the load balancer and outbound internet access
+      GroupDescription: Enable HTTP access from the load balancer
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
@@ -151,38 +202,10 @@ Resources:
       - IpProtocol: "-1"
         CidrIp: 0.0.0.0/0
 
-  WebServerRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-        - Effect: Allow
-          Principal:
-            Service: [ ec2.amazonaws.com ]
-          Action: [ 'sts:AssumeRole' ]
-      Path: /
-      Policies:
-      - PolicyName: WebServerPolicy
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - 's3:GetObject'
-            Resource: 'arn:aws:s3:::hanson-scripts/*'
-
-  WebServerInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles:
-      - !Ref WebServerRole
-
+  # Load Balancer
   WebServerLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Name: WebServerALB
       Scheme: internet-facing
       Subnets:
       - !Ref PublicSubnet1
@@ -194,16 +217,15 @@ Resources:
   WebServerTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: WebServerTargetGroup
       Port: 80
       Protocol: HTTP
       VpcId: !Ref VPC
       HealthCheckPath: /
       HealthCheckIntervalSeconds: 30
-      HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
-      TargetType: instance
+      Matcher:
+        HttpCode: "200"
 
   WebServerListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -215,51 +237,53 @@ Resources:
       Port: 80
       Protocol: HTTP
 
+  # Launch Template with S3 script reference
   WebServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
-      LaunchTemplateName: WebServerLaunchTemplate
       LaunchTemplateData:
         ImageId: !Ref LatestAmazonLinuxAMI
         InstanceType: t2.micro
-        IamInstanceProfile:
-          Arn: !GetAtt WebServerInstanceProfile.Arn
         SecurityGroupIds:
         - !Ref WebServerSecurityGroup
+        IamInstanceProfile:
+          Arn: !GetAtt InstanceProfile.Arn
         UserData:
-          Fn::Base64: !Sub |
+          Fn::Base64:  |
             #!/bin/bash -xe
-            exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
-            echo "Starting user data script"
-            if aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh; then
-              chmod +x /tmp/autoscalingScript.sh
-              /tmp/autoscalingScript.sh
-            else
-              echo "Failed to download script from S3"
-              exit 1
-            fi
+            yum update -y
+            yum install -y httpd stress awscli
+            systemctl start httpd
+            systemctl enable httpd
 
+            # Download and execute setup script from S3
+            aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh
+            chmod +x /tmp/autoscalingScript.sh
+            /tmp/autoscalingScript.sh
+
+  # Auto Scaling Group
   WebServerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      AutoScalingGroupName: WebServerASG
       LaunchTemplate:
         LaunchTemplateId: !Ref WebServerLaunchTemplate
         Version: !GetAtt WebServerLaunchTemplate.LatestVersionNumber
-      MinSize: 1
-      MaxSize: 3
-      DesiredCapacity: 1
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 2
       VPCZoneIdentifier:
-      - !Ref PrivateSubnet
+      - !Ref PrivateSubnet1
+      - !Ref PrivateSubnet2
       TargetGroupARNs:
       - !Ref WebServerTargetGroup
       HealthCheckType: ELB
       HealthCheckGracePeriod: 300
 
+  # Scaling Policies
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Alarm when CPU exceeds 50%
+      AlarmDescription: Scale-out when CPU > 50%
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Dimensions:
@@ -278,13 +302,13 @@ Resources:
     Properties:
       AdjustmentType: ChangeInCapacity
       AutoScalingGroupName: !Ref WebServerAutoScalingGroup
-      Cooldown: 60
       ScalingAdjustment: 1
+      Cooldown: 60
 
   CPUAlarmLow:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Alarm when CPU is lower than 20%
+      AlarmDescription: Scale-in when CPU < 30%
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Dimensions:
@@ -293,7 +317,7 @@ Resources:
       Statistic: Average
       Period: 60
       EvaluationPeriods: 2
-      Threshold: 20
+      Threshold: 30
       ComparisonOperator: LessThanThreshold
       AlarmActions:
       - !Ref ScaleDownPolicy
@@ -303,5 +327,6 @@ Resources:
     Properties:
       AdjustmentType: ChangeInCapacity
       AutoScalingGroupName: !Ref WebServerAutoScalingGroup
-      Cooldown: 300
       ScalingAdjustment: -1
+      Cooldown: 300
+
