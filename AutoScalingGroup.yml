@@ -242,15 +242,22 @@ Resources:
         UserData:
           Fn::Base64:  |
             #!/bin/bash -xe
+            # Install required packages
             yum update -y
-            yum install -y httpd stress awscli
+            yum install -y httpd awscli stress-ng
+
+            # Start Apache and enable on boot
             systemctl start httpd
             systemctl enable httpd
 
-            # Download and execute setup script from S3
+            # Download and execute the setup script from S3
             aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh
             chmod +x /tmp/autoscalingScript.sh
             /tmp/autoscalingScript.sh
+
+            # Verify installation (optional debugging)
+            echo "UserData completed at $(date)" >> /var/log/userdata.log
+
 
   WebServerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
