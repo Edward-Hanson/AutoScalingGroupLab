@@ -230,34 +230,49 @@ Resources:
       Protocol: HTTP
 
   WebServerLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        ImageId: !Ref LatestAmazonLinuxAMI
-        InstanceType: t2.micro
-        SecurityGroupIds:
-        - !Ref WebServerSecurityGroup
-        IamInstanceProfile:
-          Arn: !GetAtt InstanceProfile.Arn
-        UserData:
-          Fn::Base64:  |
-            #!/bin/bash -xe
-            # Install required packages
-            yum update -y
-            yum install -y httpd awscli stress-ng
-
-            # Start Apache and enable on boot
-            systemctl start httpd
-            systemctl enable httpd
-
-            # Download and execute the setup script from S3
-            aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh
+  Type: AWS::EC2::LaunchTemplate
+  Properties:
+    LaunchTemplateName: !Sub "${AWS::StackName}-LaunchTemplate"
+    LaunchTemplateData:
+      ImageId: !Ref LatestAmazonLinuxAMI
+      InstanceType: t2.micro
+      SecurityGroupIds:
+      - !Ref WebServerSecurityGroup
+      IamInstanceProfile:
+        Arn: !GetAtt InstanceProfile.Arn
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          exec > >(tee /var/log/user-data.log) 2>&1
+          echo "Starting UserData execution at $(date)"
+          
+          yum update -y
+          
+          yum install -y httpd awscli
+          
+          amazon-linux-extras install epel -y
+          yum install -y stress-ng
+          
+          systemctl start httpd
+          systemctl enable httpd
+          
+          if aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh; then
             chmod +x /tmp/autoscalingScript.sh
-            /tmp/autoscalingScript.sh
-
-            # Verify installation (optional debugging)
-            echo "UserData completed at $(date)" >> /var/log/userdata.log
-
+            if /tmp/autoscalingScript.sh; then
+              echo "Setup script completed successfully"
+            else
+              echo "Setup script failed with exit code $?"
+              exit 1
+            fi
+          else
+            echo "Failed to download setup script from S3"
+            exit 1
+          fi
+          
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerAutoScalingGroup --region ${AWS::Region}
+          
+          echo "UserData completed at $(date)"
 
   WebServerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
