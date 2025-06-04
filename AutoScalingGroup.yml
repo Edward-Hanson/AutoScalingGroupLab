@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Setup to run a webserver on auto-scaling groups
+Description: Highly-available web tier with ALB, ASG and CPU stress-test button
 
 Parameters:
   LatestAmazonLinuxAMI:
@@ -7,6 +7,7 @@ Parameters:
     Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
 
 Resources:
+  # ──────────────────────────── IAM ────────────────────────────
   InstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -14,9 +15,8 @@ Resources:
         Version: '2012-10-17'
         Statement:
         - Effect: Allow
-          Principal:
-            Service: [ec2.amazonaws.com]
-          Action: ['sts:AssumeRole']
+          Principal: { Service: [ ec2.amazonaws.com ] }
+          Action: [ 'sts:AssumeRole' ]
       Path: /
       Policies:
       - PolicyName: S3AccessPolicy
@@ -24,31 +24,28 @@ Resources:
           Version: '2012-10-17'
           Statement:
           - Effect: Allow
-            Action: ['s3:GetObject']
-            Resource: ['arn:aws:s3:::hanson-scripts/*']
+            Action: [ 's3:GetObject' ]
+            Resource: [ 'arn:aws:s3:::hanson-scripts/*' ]
 
   InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: /
-      Roles: [!Ref InstanceRole]
+      Roles: [ !Ref InstanceRole ]
 
+  # ──────────────────────────── VPC & subnets ────────────────────────────
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags:
-      - Key: Name
-        Value: AutoScalingLabVPC
+      Tags: [ { Key: Name, Value: AutoScalingLabVPC } ]
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
-      Tags:
-      - Key: Name
-        Value: AutoScalingLabIGW
+      Tags: [ { Key: Name, Value: AutoScalingLabIGW } ]
 
   VPCGatewayAttachment:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -63,9 +60,7 @@ Resources:
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
       MapPublicIpOnLaunch: true
-      Tags:
-      - Key: Name
-        Value: PublicSubnet1
+      Tags: [ { Key: Name, Value: PublicSubnet1 } ]
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
@@ -74,9 +69,7 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
       MapPublicIpOnLaunch: true
-      Tags:
-      - Key: Name
-        Value: PublicSubnet2
+      Tags: [ { Key: Name, Value: PublicSubnet2 } ]
 
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
@@ -84,9 +77,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.3.0/24
       AvailabilityZone: !Select [ 0, !GetAZs '' ]
-      Tags:
-      - Key: Name
-        Value: PrivateSubnet1
+      Tags: [ { Key: Name, Value: PrivateSubnet1 } ]
 
   PrivateSubnet2:
     Type: AWS::EC2::Subnet
@@ -94,9 +85,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.4.0/24
       AvailabilityZone: !Select [ 1, !GetAZs '' ]
-      Tags:
-      - Key: Name
-        Value: PrivateSubnet2
+      Tags: [ { Key: Name, Value: PrivateSubnet2 } ]
 
   NATGatewayEIP:
     Type: AWS::EC2::EIP
@@ -115,9 +104,7 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-      Tags:
-      - Key: Name
-        Value: PublicRouteTable
+      Tags: [ { Key: Name, Value: PublicRouteTable } ]
 
   DefaultPublicRoute:
     Type: AWS::EC2::Route
@@ -130,9 +117,7 @@ Resources:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
-      Tags:
-      - Key: Name
-        Value: PrivateRouteTable
+      Tags: [ { Key: Name, Value: PrivateRouteTable } ]
 
   DefaultPrivateRoute:
     Type: AWS::EC2::Route
@@ -165,10 +150,11 @@ Resources:
       SubnetId: !Ref PrivateSubnet2
       RouteTableId: !Ref PrivateRouteTable
 
+  # ──────────────────────────── Security groups ────────────────────────────
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Enable HTTP access on port 80
+      GroupDescription: Allow inbound HTTP from Internet
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
@@ -184,7 +170,7 @@ Resources:
   WebServerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Enable HTTP access from the load balancer
+      GroupDescription: Allow HTTP only from ALB
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
@@ -192,18 +178,16 @@ Resources:
         ToPort: 80
         SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
       SecurityGroupEgress:
-      - IpProtocol: "-1"
+      - IpProtocol: -1
         CidrIp: 0.0.0.0/0
 
+  # ──────────────────────────── ALB ────────────────────────────
   WebServerLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internet-facing
-      Subnets:
-      - !Ref PublicSubnet1
-      - !Ref PublicSubnet2
-      SecurityGroups:
-      - !Ref LoadBalancerSecurityGroup
+      Subnets: [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]
+      SecurityGroups: [ !Ref LoadBalancerSecurityGroup ]
       Type: application
 
   WebServerTargetGroup:
@@ -216,8 +200,7 @@ Resources:
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 2
-      Matcher:
-        HttpCode: "200"
+      Matcher: { HttpCode: "200" }
 
   WebServerListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -229,6 +212,7 @@ Resources:
       Port: 80
       Protocol: HTTP
 
+  # ──────────────────────────── Launch template ────────────────────────────
   WebServerLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -236,45 +220,49 @@ Resources:
       LaunchTemplateData:
         ImageId: !Ref LatestAmazonLinuxAMI
         InstanceType: t2.micro
-        SecurityGroupIds:
-        - !Ref WebServerSecurityGroup
+        SecurityGroupIds: [ !Ref WebServerSecurityGroup ]
         IamInstanceProfile:
           Arn: !GetAtt InstanceProfile.Arn
+        Monitoring:
+          Enabled: true
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash -xe
-            
             exec > >(tee /var/log/user-data.log) 2>&1
-            echo "Starting UserData execution at $(date)"
-            
-            yum update -y
-            
-            yum install -y httpd awscli
-            
-            amazon-linux-extras install epel -y
+            echo "STARTING USERDATA @ $(date)"
+
+            # ── 1. Prepare stress-ng ──────────────────────────────────────
+            amazon-linux-extras install -y epel
             yum install -y stress-ng
-            
-            systemctl start httpd
-            systemctl enable httpd
-            
-            if aws s3 cp s3://hanson-scripts/autoscalingScript.sh /tmp/autoscalingScript.sh; then
+
+            # Allow 'apache' to launch stress-ng as root & kill it
+            echo 'apache ALL=(root) NOPASSWD: /usr/bin/stress-ng' \
+              > /etc/sudoers.d/apache-stress
+            chmod 440 /etc/sudoers.d/apache-stress
+
+            # Simplest path: turn SELinux off (or toggle httpd_execmem on)
+            setenforce 0 || true
+
+            # ── 2. System updates & httpd ────────────────────────────────
+            yum update -y
+            yum install -y httpd awscli
+            systemctl enable --now httpd
+
+            # ── 3. Pull and execute the app bootstrap script ────────────
+            if aws s3 cp s3://hanson-scripts/autoscalingScript.sh \
+                    /tmp/autoscalingScript.sh ; then
               chmod +x /tmp/autoscalingScript.sh
-              if /tmp/autoscalingScript.sh; then
-                echo "Setup script completed successfully"
-              else
-                echo "Setup script failed with exit code $?"
-                exit 1
-              fi
+              /tmp/autoscalingScript.sh || { echo BOOTSTRAP_FAIL; exit 1; }
             else
-              echo "Failed to download setup script from S3"
-              exit 1
+              echo S3_DOWNLOAD_FAIL ; exit 1
             fi
-            
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource WebServerAutoScalingGroup --region ${AWS::Region}
-            
-            echo "UserData completed at $(date)"
 
+            /opt/aws/bin/cfn-signal -e $? \
+              --stack ${AWS::StackName} \
+              --resource WebServerAutoScalingGroup \
+              --region ${AWS::Region}
 
+  # ──────────────────────────── Auto Scaling ────────────────────────────
   WebServerAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -284,60 +272,54 @@ Resources:
       MinSize: 1
       MaxSize: 3
       DesiredCapacity: 1
-      VPCZoneIdentifier:
-      - !Ref PrivateSubnet1
-      - !Ref PrivateSubnet2
-      TargetGroupARNs:
-      - !Ref WebServerTargetGroup
+      VPCZoneIdentifier: [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]
+      TargetGroupARNs: [ !Ref WebServerTargetGroup ]
       HealthCheckType: ELB
       HealthCheckGracePeriod: 300
+
+  # ──────────────────────────── Scaling policies & alarms ────────────────
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: 1
+      Cooldown: 60
+
+  ScaleDownPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
+      AdjustmentType: ChangeInCapacity
+      ScalingAdjustment: -1
+      Cooldown: 300
 
   CPUAlarmHigh:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Scale-out when CPU > 50%
+      AlarmDescription: Scale-out when CPU > 50 %
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Dimensions:
-      - Name: AutoScalingGroupName
-        Value: !Ref WebServerAutoScalingGroup
+      - { Name: AutoScalingGroupName, Value: !Ref WebServerAutoScalingGroup }
       Statistic: Average
-      Period: 60
-      EvaluationPeriods: 2
+      Period: 20
+      EvaluationPeriods: 1
       Threshold: 50
       ComparisonOperator: GreaterThanThreshold
-      AlarmActions:
-      - !Ref ScaleUpPolicy
-
-  ScaleUpPolicy:
-    Type: AWS::AutoScaling::ScalingPolicy
-    Properties:
-      AdjustmentType: ChangeInCapacity
-      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
-      ScalingAdjustment: 1
-      Cooldown: 60
+      AlarmActions: [ !Ref ScaleUpPolicy ]
 
   CPUAlarmLow:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Scale-in when CPU < 30%
+      AlarmDescription: Scale-in when CPU < 30 %
       Namespace: AWS/EC2
       MetricName: CPUUtilization
       Dimensions:
-      - Name: AutoScalingGroupName
-        Value: !Ref WebServerAutoScalingGroup
+      - { Name: AutoScalingGroupName, Value: !Ref WebServerAutoScalingGroup }
       Statistic: Average
       Period: 60
       EvaluationPeriods: 2
       Threshold: 30
       ComparisonOperator: LessThanThreshold
-      AlarmActions:
-      - !Ref ScaleDownPolicy
-
-  ScaleDownPolicy:
-    Type: AWS::AutoScaling::ScalingPolicy
-    Properties:
-      AdjustmentType: ChangeInCapacity
-      AutoScalingGroupName: !Ref WebServerAutoScalingGroup
-      ScalingAdjustment: -1
-      Cooldown: 300
+      AlarmActions: [ !Ref ScaleDownPolicy ]
